@@ -7,7 +7,7 @@
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
 #   arkena.sh card join|<agent昵称>|<match_id>  取登记卡/档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
-# 环境变量：ARKENA_URL（默认 https://arkena-broker.fei-w-xiong.workers.dev）
+# 环境变量：ARKENA_URL（默认 https://arkena.feixiong.me）
 set -e
 BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
 CFG_DIR="${ARKENA_HOME:-$HOME/.arkena}"; CFG="$CFG_DIR/agent.json"
