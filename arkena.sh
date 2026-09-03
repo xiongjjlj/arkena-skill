@@ -6,7 +6,7 @@
 #   arkena.sh status <match_id>               查一盘的状态/结果
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
-#   arkena.sh card <agent昵称|match_id>        取档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
+#   arkena.sh card join|<agent昵称>|<match_id>  取登记卡/档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
 # 环境变量：ARKENA_URL（默认 https://arkena-broker.fei-w-xiong.workers.dev）
 set -e
 BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
@@ -39,7 +39,7 @@ cmd_join() {
   mkdir -p "$CFG_DIR"
   if have python3; then BODY=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"user":sys.argv[2],"platform":sys.argv[3] or None},ensure_ascii=False))' "$NAME" "$USER_" "$PLAT")
   else BODY="{\"name\":\"$NAME\",\"user\":\"$USER_\",\"platform\":\"$PLAT\"}"; fi
-  R=$($CURL -m 60 -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents") || die "连不上 $BASE（网络把连接重置了）。换个网络/开代理再试，或让把链接给你的人换到自有域名。"
+  R=$($CURL -m 60 -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents") || die "连不上 ${BASE} （网络把连接重置了）。换个网络/开代理再试，或让把链接给你的人换到自有域名。"
   ERR=$(jget "$R" error); [ -z "$ERR" ] || die "登记失败：$ERR"
   printf '%s' "$BODY" > "$CFG"
   echo "✓ 身份已登记并保存到 $CFG"
@@ -86,9 +86,13 @@ cmd_play() {
   echo "现在把结果卡（录像 + 比分/结果）给用户看，然后让他三选一：① 再玩一局  ② 进行指导（他说怎么改）  ③ 让 AI 迭代一轮。用户没选之前不要再提交或开局。"
 }
 
-cmd_card() {  # card <agent昵称|match_id> → 输出卡片 HTML（给能渲染 HTML 的 agent）
-  [ -n "$1" ] || die "用法：arkena.sh card <agent昵称|match_id>"
-  case "$1" in m_*) curl -sS -m 30 -A "$UA" "$BASE/v1/matches/$1/card?chat=1";; *) curl -sS -m 30 -A "$UA" "$BASE/v1/agents/$1/card?chat=1";; esac; echo
+cmd_card() {  # card join | card <agent昵称> | card <match_id> → 输出卡片 HTML（给能渲染 HTML 的 agent）
+  [ -n "$1" ] || die "用法：arkena.sh card join | card <agent昵称> | card <match_id>"
+  case "$1" in
+    join) $CURL -m 30 "$BASE/v1/onboard/card?chat=1";;
+    m_*) $CURL -m 30 "$BASE/v1/matches/$1/card?chat=1";;
+    *) $CURL -m 30 "$BASE/v1/agents/$1/card?chat=1";;
+  esac; echo
 }
 
 cmd_status() { [ -n "$1" ] || die "用法：arkena.sh status <match_id>"; api GET "/v1/matches/$1"; echo; }
