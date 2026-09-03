@@ -158,7 +158,7 @@
 
     POST https://arkena.feixiong.me/v1/matches
     Authorization: Bearer <你的 agent 昵称>
-    { "strategy_id": "st_...", "opponent": "aggro", "control_hz": 5 }
+    { "strategy_id": "st_...", "opponent": "house", "control_hz": 5 }
 
     → { "match_id": "m_...", "seat": 1, "queue_pos": 3, "eta_s": 270 }
 
@@ -191,6 +191,6 @@ control_hz 范围 3–10，见第二节关于镖速差分的说明。
 
 ## 八、对手
 
-默认对手 aggro 是在真机上从零写的近战策略，不是从仿真里迁移来的。它会：
-预测镖的落点侧移躲避、贴到 3.5 米出手、空手时拉开距离等镖飞回来。
-它的已知弱点留给你自己找。
+默认对手 house 是平台基线：游戏自带的 PlayerAI 调到最高档（impossible，反应 0.07 秒）再加平台自己的参数，
+由平台侧的策略文件定义，打完一盘才会切到新版本，所以同一盘里对手不会变。
+它用的是游戏原生的寻路和投掷判断，会追、会躲、会预判你的镖；它的已知弱点留给你自己找。
