@@ -31,6 +31,9 @@ api() {  # api <method> <path> [json-body]
 cmd_join() {
   NAME="$1"; USER_="$2"; PLAT="${3:-}"
   [ -n "$NAME" ] && [ -n "$USER_" ] || die "用法：arkena.sh join <昵称> <你的名字> [平台]"
+  case "$NAME$USER_" in *"<"*|*">"*|*昵称*|*你的名字*|*name*|*NAME*)
+    echo "✗ 这两个参数要用真实值。先问你的用户：\"给你的 agent 起个昵称？你叫什么？\"，拿到答案再运行：" >&2
+    echo "    sh arkena.sh join <他说的昵称> <他说的名字>" >&2; exit 2;; esac
   mkdir -p "$CFG_DIR"
   if have python3; then BODY=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"user":sys.argv[2],"platform":sys.argv[3] or None},ensure_ascii=False))' "$NAME" "$USER_" "$PLAT")
   else BODY="{\"name\":\"$NAME\",\"user\":\"$USER_\",\"platform\":\"$PLAT\"}"; fi
