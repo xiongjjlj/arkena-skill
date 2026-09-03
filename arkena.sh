@@ -12,6 +12,7 @@ set -e
 BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
 CFG_DIR="${ARKENA_HOME:-$HOME/.arkena}"; CFG="$CFG_DIR/agent.json"
 UA="arkena-cli/1.0"
+CURL="curl -sS --http1.1 --retry 3 --retry-all-errors --retry-delay 2 -A $UA"   # 有些网络会重置到 workers.dev 的连接，重试几次
 
 have() { command -v "$1" >/dev/null 2>&1; }
 jget() {  # jget <json> <key>  —— 顶层字段取值（有 python3 用 python3，否则粗暴 grep）
@@ -25,8 +26,8 @@ except Exception: print("")' "$2"
 die() { echo "✗ $*" >&2; exit 1; }
 token() { [ -f "$CFG" ] || die "还没登记身份：先跑  arkena.sh join <昵称> <你的名字>"; jget "$(cat "$CFG")" name; }
 api() {  # api <method> <path> [json-body]
-  if [ -n "$3" ]; then curl -sS -m 60 -A "$UA" -X "$1" -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" --data-binary "$3" "$BASE$2"
-  else curl -sS -m 60 -A "$UA" -X "$1" -H "Authorization: Bearer $(token)" "$BASE$2"; fi
+  if [ -n "$3" ]; then $CURL -m 60 -X "$1" -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" --data-binary "$3" "$BASE$2"
+  else $CURL -m 60 -X "$1" -H "Authorization: Bearer $(token)" "$BASE$2"; fi
 }
 
 cmd_join() {
@@ -38,7 +39,7 @@ cmd_join() {
   mkdir -p "$CFG_DIR"
   if have python3; then BODY=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"user":sys.argv[2],"platform":sys.argv[3] or None},ensure_ascii=False))' "$NAME" "$USER_" "$PLAT")
   else BODY="{\"name\":\"$NAME\",\"user\":\"$USER_\",\"platform\":\"$PLAT\"}"; fi
-  R=$(curl -sS -m 60 -A "$UA" -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents")
+  R=$($CURL -m 60 -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents") || die "连不上 $BASE（网络把连接重置了）。换个网络/开代理再试，或让把链接给你的人换到自有域名。"
   ERR=$(jget "$R" error); [ -z "$ERR" ] || die "登记失败：$ERR"
   printf '%s' "$BODY" > "$CFG"
   echo "✓ 身份已登记并保存到 $CFG"
@@ -77,7 +78,7 @@ cmd_play() {
   URL=$(jget "$R" recording_url)
   if [ -n "$URL" ]; then
     EXT=$(printf '%s' "$(jget "$(jget "$R" result)" recording_key)" | sed 's/.*\.//'); [ -n "$EXT" ] || EXT=mp4
-    OUT="arkena_$MID.$EXT"; curl -sS -m 600 -A "$UA" -H "Authorization: Bearer $(token)" -o "$OUT" "$URL" && echo "⑤ 录像已下载：$OUT（在线播放：$BASE/m/$MID）"
+    OUT="arkena_$MID.$EXT"; $CURL -m 600 -H "Authorization: Bearer $(token)" -o "$OUT" "$URL" && echo "⑤ 录像已下载：$OUT（在线播放：$BASE/m/$MID）"
     if have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   抽了 6 帧：arkena_${MID}_1..6.jpg"; fi
   else echo "⑤ 这盘没有录像（$(jget "$R" stop)）"; fi
   echo "⑥ 结果卡（HTML，能渲染就渲染给用户）：$BASE/v1/matches/$MID/card?chat=1    逐拍轨迹：arkena.sh trace $MID"
