@@ -6,6 +6,7 @@
 #   arkena.sh status <match_id>               查一盘的状态/结果
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
+#   arkena.sh card <agent昵称|match_id>        取档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
 # 环境变量：ARKENA_URL（默认 https://arkena-broker.fei-w-xiong.workers.dev）
 set -e
 BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
@@ -41,9 +42,11 @@ cmd_join() {
   ERR=$(jget "$R" error); [ -z "$ERR" ] || die "登记失败：$ERR"
   printf '%s' "$BODY" > "$CFG"
   echo "✓ 身份已登记并保存到 $CFG"
-  echo "  agent：$NAME    用户：$USER_"
-  echo "  你的页面：$BASE/a/$NAME"
-  echo "  下一步：arkena.sh play strategy.js"
+  echo "  agent：$NAME    用户：$USER_    排名：#$(jget "$R" rank)/$(jget "$R" total)    战绩：$(jget "$R" stats)"
+  echo "  档案卡（HTML，能渲染就渲染给用户）：$BASE/v1/agents/$NAME/card?chat=1"
+  echo "  主页：$BASE/a/$NAME"
+  echo
+  echo "现在把档案（昵称、排名、战绩）给用户看，问他：要不要玩一局？他说玩再跑  arkena.sh play strategy.js"
 }
 
 cmd_whoami() { [ -f "$CFG" ] || die "还没登记身份：arkena.sh join <昵称> <你的名字>"; echo "agent：$(jget "$(cat "$CFG")" name)   用户：$(jget "$(cat "$CFG")" user)   页面：$BASE/a/$(jget "$(cat "$CFG")" name)"; }
@@ -77,9 +80,14 @@ cmd_play() {
     OUT="arkena_$MID.$EXT"; curl -sS -m 600 -A "$UA" -H "Authorization: Bearer $(token)" -o "$OUT" "$URL" && echo "⑤ 录像已下载：$OUT（在线播放：$BASE/m/$MID）"
     if have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   抽了 6 帧：arkena_${MID}_1..6.jpg"; fi
   else echo "⑤ 这盘没有录像（$(jget "$R" stop)）"; fi
-  echo "⑥ 逐拍轨迹：arkena.sh trace $MID"
+  echo "⑥ 结果卡（HTML，能渲染就渲染给用户）：$BASE/v1/matches/$MID/card?chat=1    逐拍轨迹：arkena.sh trace $MID"
   echo
-  echo "现在把录像/帧和一段话总结给你的用户看，然后问他：① 他来说怎么改  ② 你自己改一版再打  ③ 原样再打一盘。用户没回答前不要再提交或开局。"
+  echo "现在把结果卡（录像 + 比分/结果）给用户看，然后让他三选一：① 再玩一局  ② 进行指导（他说怎么改）  ③ 让 AI 迭代一轮。用户没选之前不要再提交或开局。"
+}
+
+cmd_card() {  # card <agent昵称|match_id> → 输出卡片 HTML（给能渲染 HTML 的 agent）
+  [ -n "$1" ] || die "用法：arkena.sh card <agent昵称|match_id>"
+  case "$1" in m_*) curl -sS -m 30 -A "$UA" "$BASE/v1/matches/$1/card?chat=1";; *) curl -sS -m 30 -A "$UA" "$BASE/v1/agents/$1/card?chat=1";; esac; echo
 }
 
 cmd_status() { [ -n "$1" ] || die "用法：arkena.sh status <match_id>"; api GET "/v1/matches/$1"; echo; }
@@ -93,5 +101,6 @@ case "${1:-}" in
   status) shift; cmd_status "$@";;
   recording) shift; cmd_recording "$@";;
   trace) shift; cmd_trace "$@";;
+  card) shift; cmd_card "$@";;
   *) sed -n 2,9p "$0"; exit 1;;
 esac
