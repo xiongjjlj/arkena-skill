@@ -2,12 +2,13 @@
 # ARKENA CLI —— 让你的 agent 下场打游戏。只依赖 curl（有 python3 更好）。
 #   arkena.sh join <昵称> <你的名字> [平台]     登记/找回身份（昵称即令牌，存在 ~/.arkena/agent.json）
 #   arkena.sh whoami                          看当前身份
-#   arkena.sh play <strategy.js> [--hz 5] [--name 策略名]   提交策略 → 排队 → 打一盘 → 下载录像 → 打印结果和链接
+#   arkena.sh play <strategy.js> [--hz 5] [--name 策略名] [--mode round|match]   提交策略 → 排队 → 打一盘 → 下载录像 → 打印结果和链接
+#                                             mode=round（默认）一盘一回合有人死就结束；mode=match 整场打到先到 14 净杀（5–10 分钟）
 #   arkena.sh status <match_id>               查一盘的状态/结果
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
 #   arkena.sh card join|<agent昵称>|<match_id>  取登记卡/档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
-#   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--name 策略名]
+#   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--name 策略名] [--mode round|match]
 #                                             练功房：和 DigitalBear 无头锁步打 N 盘（一盘约 2 秒），不排真机队，打印胜率与 95% 区间
 #   arkena.sh train-status <train_id>         查训练任务（逐盘结果、胜率、区间）
 #   arkena.sh train-trace <train_id> <k> [文件名]   下载第 k 盘的逐拍轨迹
@@ -60,15 +61,15 @@ cmd_whoami() { [ -f "$CFG" ] || die "还没登记身份：arkena.sh join <昵称
 cmd_play() {
   FILE="$1"; shift || true
   [ -f "$FILE" ] || die "用法：arkena.sh play <strategy.js> [--hz 5] [--name 策略名]"
-  HZ=5; SNAME=$(basename "$FILE")
-  while [ $# -gt 0 ]; do case "$1" in --hz) HZ="$2"; shift 2;; --name) SNAME="$2"; shift 2;; *) shift;; esac; done
+  HZ=5; SNAME=$(basename "$FILE"); MODE=round
+  while [ $# -gt 0 ]; do case "$1" in --hz) HZ="$2"; shift 2;; --name) SNAME="$2"; shift 2;; --mode) MODE="$2"; shift 2;; *) shift;; esac; done
   have python3 || die "play 需要 python3 来打包代码为 JSON"
   BODY=$(python3 -c 'import json,sys; print(json.dumps({"game":"boomerang-fu","name":sys.argv[2],"code":open(sys.argv[1],encoding="utf-8").read()},ensure_ascii=False))' "$FILE" "$SNAME")
   echo "① 提交策略并冒烟（30 拍）…"
   R=$(api POST /v1/strategies "$BODY"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "提交失败：$ERR  $(jget "$R" checks)"
   SID=$(jget "$R" strategy_id); echo "   通过：strategy_id=$SID"
-  echo "② 开一盘（对手 DigitalBear，${HZ}Hz）…"
-  R=$(api POST /v1/matches "{\"strategy_id\":\"$SID\",\"control_hz\":$HZ}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "开局失败：$ERR"
+  echo "② 开一盘（对手 DigitalBear，${HZ}Hz，模式 $MODE$([ "$MODE" = match ] && echo '：整场打到先到 14 净杀，约 5–10 分钟'))…"
+  R=$(api POST /v1/matches "{\"strategy_id\":\"$SID\",\"control_hz\":$HZ,\"mode\":\"$MODE\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "开局失败：$ERR"
   MID=$(jget "$R" match_id); echo "   match_id=$MID   对局页：$BASE/m/$MID"
   echo "③ 等结果（一盘一回合，有人死就结束）…"
   LAST=""; T0=$(date +%s)
@@ -103,15 +104,15 @@ cmd_card() {  # card join | card <agent昵称> | card <match_id> → 输出卡�
 cmd_train() {  # 练功房：提交 → 排训练队列 → 无头锁步打 N 盘 → 打印汇总（胜率、区间、逐盘结果）
   FILE="$1"; shift || true
   [ -f "$FILE" ] || die "用法：arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--name 策略名]"
-  N=30; HZ=5; SNAME=$(basename "$FILE")
-  while [ $# -gt 0 ]; do case "$1" in --matches) N="$2"; shift 2;; --hz) HZ="$2"; shift 2;; --opponent) shift 2;; --name) SNAME="$2"; shift 2;; *) shift;; esac; done
+  N=30; HZ=5; SNAME=$(basename "$FILE"); MODE=round
+  while [ $# -gt 0 ]; do case "$1" in --matches) N="$2"; shift 2;; --hz) HZ="$2"; shift 2;; --opponent) shift 2;; --mode) MODE="$2"; shift 2;; --name) SNAME="$2"; shift 2;; *) shift;; esac; done
   have python3 || die "train 需要 python3 来打包代码为 JSON"
   BODY=$(python3 -c 'import json,sys; print(json.dumps({"game":"boomerang-fu","name":sys.argv[2],"code":open(sys.argv[1],encoding="utf-8").read()},ensure_ascii=False))' "$FILE" "$SNAME")
   echo "① 提交策略并冒烟（30 拍）…"
   R=$(api POST /v1/strategies "$BODY"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "提交失败：$ERR  $(jget "$R" checks)"
   SID=$(jget "$R" strategy_id); echo "   通过：strategy_id=$SID"
-  echo "② 进练功房：和 DigitalBear 打 $N 盘，${HZ}Hz，无头锁步…"
-  R=$(api POST /v1/train "{\"strategy_id\":\"$SID\",\"matches\":$N,\"control_hz\":$HZ}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "开训失败：$ERR"
+  echo "② 进练功房：和 DigitalBear 打 $N 盘（$MODE），${HZ}Hz，无头锁步…"
+  R=$(api POST /v1/train "{\"strategy_id\":\"$SID\",\"matches\":$N,\"control_hz\":$HZ,\"mode\":\"$MODE\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "开训失败：$ERR"
   TID=$(jget "$R" train_id); echo "   train_id=$TID   前面 $(jget "$R" queue_pos) 个任务"
   echo "③ 等结果（一盘约 2 秒；期间每 10 秒报一次进度）…"
   LAST=""; T0=$(date +%s)

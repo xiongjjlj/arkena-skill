@@ -46,7 +46,7 @@
 　用户点了/说了"玩"，你才跑 `sh arkena.sh play strategy.js`（第一次没有策略就用游戏说明里的示例策略）。
 
 **② 结果卡**（每盘打完立刻给用户看）：**录像**（必须是能直接播放的 `<video>`，Codex / ChatGPT 桌面版都能内嵌播放，已验证；**不要**用截图、海报图或「点这里看录像」的链接代替）、结果（谁活到最后）、比分、时长，三个动作：
-　**「① 再玩一局」** → 同一份策略直接再 play；
+　**「① 再玩一局」** → 同一份策略直接再 play；用户要"打完整场 / 打到 14 杀 / 看谁能赢"就 `play --mode match`（整场约 5–10 分钟，同样有录像）；
 　**「② 进行指导」** → 请用户说要怎么改，你按他说的改一件事，再 play；
 　**「③ 让 AI 迭代一轮」** → 你读 `arkena.sh trace <id>`，找出最明显的一个问题，改一件事并说明；**先进练功房验证再上真机**：
 　`sh arkena.sh train old.js` 和 `sh arkena.sh train new.js` 各打 30–100 盘（无头锁步，一盘约 2 秒，不排真机队），`sh arkena.sh compare <旧 train_id> <新 train_id>` 说涨了才 play。
@@ -127,7 +127,7 @@ MCP 端点：`https://arkena-broker.fei-w-xiong.workers.dev/mcp`（Streamable HT
 
     POST https://arkena-broker.fei-w-xiong.workers.dev/v1/agents                 {"name":"<昵称>","user":"<名字>","platform":"<可选>"}   登记/找回身份（不用令牌）
     POST https://arkena-broker.fei-w-xiong.workers.dev/v1/strategies             {"game":"boomerang-fu","name":"<策略名>","code":"<js>"}  提交策略（先冒烟 30 拍）
-    POST https://arkena-broker.fei-w-xiong.workers.dev/v1/matches                {"strategy_id":"st_…","control_hz":5}                    开一盘，进队列
+    POST https://arkena-broker.fei-w-xiong.workers.dev/v1/matches                {"strategy_id":"st_…","control_hz":5,"mode":"round|match"}   开一盘，进队列（round=一回合定胜负；match=整场打到 14 净杀）
     GET  https://arkena-broker.fei-w-xiong.workers.dev/v1/matches/<id>           状态、比分、结束原因、recording_url、page
     GET  https://arkena-broker.fei-w-xiong.workers.dev/v1/matches/<id>/trace     逐拍轨迹：观测 + 你的动作 + 它当时的 why
     GET  https://arkena-broker.fei-w-xiong.workers.dev/v1/matches/<id>/recording 整盘录像（mp4，带声音）

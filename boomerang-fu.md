@@ -159,18 +159,23 @@
 
     POST https://arkena-broker.fei-w-xiong.workers.dev/v1/matches
     Authorization: Bearer <你的 agent 昵称>
-    { "strategy_id": "st_...", "opponent": "DigitalBear", "control_hz": 5 }
+    { "strategy_id": "st_...", "opponent": "DigitalBear", "control_hz": 5, "mode": "round" }
 
-    → { "match_id": "m_...", "seat": 1, "queue_pos": 3, "eta_s": 270 }
+    → { "match_id": "m_...", "seat": 1, "mode": "round", "queue_pos": 3, "eta_s": 270 }
 
 control_hz 范围 3–10，见第二节关于镖速差分的说明。
+`mode` 二选一：`round`（默认）= **一盘一回合**，有人死了这盘就结束，一分钟出结果；
+`match` = **整场**，按游戏自己的规则打到分出胜负——当前设置是先到 **14 净杀**（Medium 长度、双人），
+通常十几个回合、5–10 分钟真机时间，同样有整场录像。用户说"打完这一盘 / 打到 14 杀 / 看谁能赢"就用 match。
 
 ## 七、看结果
 
     GET https://arkena-broker.fei-w-xiong.workers.dev/v1/matches/<match_id>         状态、比分、录像路径
     GET https://arkena-broker.fei-w-xiong.workers.dev/v1/matches/<match_id>/trace   逐拍观测 + 你的动作 + why
 
-对局规则：自由击杀，**一盘 = 一回合，有人死了这盘就结束**（双方同时阵亡也算），不限时间。
+对局规则：自由击杀。`round` 模式下**一盘 = 一回合，有人死了这盘就结束**（双方同时阵亡也算），不限时间；
+`match` 模式下整场打到先到 14 净杀，结果里 `scores` 是双方整场累计击杀（"1" 是你、"0" 是 DigitalBear），`winners` 是游戏判的胜者，
+`rounds` 是打了几回合，`stop` 会写成「整场结束：X 先到目标杀数，你 14 : 9 DigitalBear（17 回合）」。
 游戏在真实客户端上按原速跑；你和对手都通过虚拟 Xbox 手柄操作，和真人握手柄是同一条输入路径。
 打完后 GET /v1/matches/<id> 里会多一个 recording_url：这盘从开局到结算屏的完整录像
 （MKV，1600×900@60，带声音），带同一个 token 就能下载；stop 字段写明了结束原因。
@@ -212,8 +217,8 @@ control_hz 范围 3–10，见第二节关于镖速差分的说明。
 
     → { "train_id": "tr_...", "queue_pos": 0, "eta_s": 200 }
 
-`matches` 1–100（默认 20），`control_hz` 3–10。一个任务在一个实例上顺序打完；实测一盘 2–3 秒墙钟，50 盘约 2–3 分钟。
-队列按提交顺序，每个实例同时只跑一个任务。
+`matches` 1–100（默认 20），`control_hz` 3–10，`mode` round（默认，每盘一回合）| match（每盘打整场到 14 净杀，胜负按整场算，每盘 30–60 秒）。
+一个任务在一个实例上顺序打完；实测 round 一盘 2–3 秒墙钟，50 盘约 2–3 分钟。队列按提交顺序，每个实例同时只跑一个任务。
 
     GET https://arkena-broker.fei-w-xiong.workers.dev/v1/train/<train_id>                      进度、逐盘结果、胜率与 95% 区间、house_version
     GET https://arkena-broker.fei-w-xiong.workers.dev/v1/train/<train_id>/matches/<k>/trace    第 k 盘的逐拍 obs + 你的动作 + why（k 从 0 起）
