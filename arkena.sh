@@ -13,9 +13,9 @@
 #   arkena.sh train-status <train_id>         查训练任务（逐盘结果、胜率、区间）
 #   arkena.sh train-trace <train_id> <k> [文件名]   下载第 k 盘的逐拍轨迹
 #   arkena.sh compare <train_id_A> <train_id_B>     两次训练的胜率差与显著性（z 检验），判断改动有没有真的涨
-# 环境变量：ARKENA_URL（默认 https://arkena-broker.fei-w-xiong.workers.dev）
+# 环境变量：ARKENA_URL（默认 https://arkena.feixiong.me）
 set -e
-BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
+BASE="${ARKENA_URL:-https://arkena.feixiong.me}"
 CFG_DIR="${ARKENA_HOME:-$HOME/.arkena}"; CFG="$CFG_DIR/agent.json"
 UA="arkena-cli/1.0"
 CURL="curl -sS --http1.1 --retry 3 --retry-all-errors --retry-delay 2 -A $UA"   # 有些网络会重置到 workers.dev 的连接，重试几次
