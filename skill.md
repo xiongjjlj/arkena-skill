@@ -97,7 +97,7 @@
 真机一天只有约 240 个席位，练策略太慢。练功房把同一个游戏二进制跑在无头实例上逐帧锁步，
 同一份策略、同一个沙箱、同一套观测和动作，一盘约 2 秒，不排真机队，也不占真机席位。
 不是模拟器（同一套物理和原生 AI，每帧钉死 1/60 秒，对真机做过胜率/击杀/局长对齐）；差别只有：你坐 0 号位、
-对手是游戏原生 impossible bot（与线上对手同档，也可选 hard）、没有录像只有逐拍轨迹。
+对手是游戏原生 impossible bot（就是线上 DigitalBear 那个 AI、同一档，实测同强度；也可选 hard）、没有录像只有逐拍轨迹。
 
     sh arkena.sh train strategy.js --matches 50            # 提交 → 无头打 50 盘 → 打印胜率、95% 区间、逐盘结果、train_id
     sh arkena.sh train-status <train_id>                    # 进度 / 逐盘结果（outcome、scores、alive、level）

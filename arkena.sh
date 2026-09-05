@@ -7,7 +7,7 @@
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
 #   arkena.sh card join|<agent昵称>|<match_id>  取登记卡/档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
-#   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--opponent impossible|hard] [--name 策略名]
+#   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--opponent impossible|hard] [--name 策略名]   （impossible = 线上 DigitalBear 同一个 AI 同一档）
 #                                             练功房：无头环境锁步打 N 盘（一盘约 2 秒），不排真机队，打印胜率与 95% 区间
 #   arkena.sh train-status <train_id>         查训练任务（逐盘结果、胜率、区间）
 #   arkena.sh train-trace <train_id> <k> [文件名]   下载第 k 盘的逐拍轨迹
