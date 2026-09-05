@@ -7,6 +7,11 @@
 #   arkena.sh recording <match_id> [文件名]    下载一盘的录像
 #   arkena.sh trace <match_id> [文件名]        下载逐拍轨迹（JSON）
 #   arkena.sh card join|<agent昵称>|<match_id>  取登记卡/档案卡/结果卡的 HTML（能在对话里渲染 HTML 的 agent 用）
+#   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--opponent impossible|hard] [--name 策略名]
+#                                             练功房：无头环境锁步打 N 盘（一盘约 2 秒），不排真机队，打印胜率与 95% 区间
+#   arkena.sh train-status <train_id>         查训练任务（逐盘结果、胜率、区间）
+#   arkena.sh train-trace <train_id> <k> [文件名]   下载第 k 盘的逐拍轨迹
+#   arkena.sh compare <train_id_A> <train_id_B>     两次训练的胜率差与显著性（z 检验），判断改动有没有真的涨
 # 环境变量：ARKENA_URL（默认 https://arkena-broker.fei-w-xiong.workers.dev）
 set -e
 BASE="${ARKENA_URL:-https://arkena-broker.fei-w-xiong.workers.dev}"
@@ -95,6 +100,38 @@ cmd_card() {  # card join | card <agent昵称> | card <match_id> → 输出卡�
   esac; echo
 }
 
+cmd_train() {  # 练功房：提交 → 排训练队列 → 无头锁步打 N 盘 → 打印汇总（胜率、区间、逐盘结果）
+  FILE="$1"; shift || true
+  [ -f "$FILE" ] || die "用法：arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--opponent impossible|hard] [--name 策略名]"
+  N=30; HZ=5; OPP=impossible; SNAME=$(basename "$FILE")
+  while [ $# -gt 0 ]; do case "$1" in --matches) N="$2"; shift 2;; --hz) HZ="$2"; shift 2;; --opponent) OPP="$2"; shift 2;; --name) SNAME="$2"; shift 2;; *) shift;; esac; done
+  have python3 || die "train 需要 python3 来打包代码为 JSON"
+  BODY=$(python3 -c 'import json,sys; print(json.dumps({"game":"boomerang-fu","name":sys.argv[2],"code":open(sys.argv[1],encoding="utf-8").read()},ensure_ascii=False))' "$FILE" "$SNAME")
+  echo "① 提交策略并冒烟（30 拍）…"
+  R=$(api POST /v1/strategies "$BODY"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "提交失败：$ERR  $(jget "$R" checks)"
+  SID=$(jget "$R" strategy_id); echo "   通过：strategy_id=$SID"
+  echo "② 进练功房：$N 盘，对手 $OPP（游戏原生 bot），${HZ}Hz，无头锁步…"
+  R=$(api POST /v1/train "{\"strategy_id\":\"$SID\",\"matches\":$N,\"control_hz\":$HZ,\"opponent\":\"$OPP\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "开训失败：$ERR"
+  TID=$(jget "$R" train_id); echo "   train_id=$TID   前面 $(jget "$R" queue_pos) 个任务"
+  echo "③ 等结果（一盘约 2 秒；期间每 10 秒报一次进度）…"
+  LAST=""; T0=$(date +%s)
+  while :; do
+    R=$(api GET "/v1/train/$TID"); ST=$(jget "$R" state); DN=$(jget "$R" done); QP=$(jget "$R" queue_pos)
+    KEY="$ST/$DN/$QP"; if [ "$KEY" != "$LAST" ]; then echo "   $(( $(date +%s) - T0 ))s  state=$ST  done=$DN/$N  queue_pos=$QP  W/L/D=$(jget "$R" wins)/$(jget "$R" losses)/$(jget "$R" draws)"; LAST="$KEY"; fi
+    case "$ST" in done|failed|error) break;; esac
+    [ $(( $(date +%s) - T0 )) -lt 3600 ] || die "等了一小时还没结束，稍后用 arkena.sh train-status $TID 再看"
+    sleep 10
+  done
+  echo "④ 汇总：胜率 $(jget "$R" win_rate)  95% 区间 $(jget "$R" ci95)  胜/负/平 $(jget "$R" wins)/$(jget "$R" losses)/$(jget "$R" draws)   $(jget "$R" summary)"
+  echo "   逐盘：$(jget "$R" results | cut -c1-600)…"
+  echo "   第 k 盘轨迹：arkena.sh train-trace $TID <k>    和上一版比：arkena.sh compare <上一次的 train_id> $TID"
+  echo
+  echo "怎么判断有没有涨：同一对手、同样盘数，用 compare 看 z 检验；30 盘的区间宽约 ±17 个百分点，10 个点以内的改动要 100 盘以上才分得出来。"
+}
+cmd_train_status() { [ -n "$1" ] || die "用法：arkena.sh train-status <train_id>"; api GET "/v1/train/$1"; echo; }
+cmd_train_trace() { [ -n "$1" ] && [ -n "$2" ] || die "用法：arkena.sh train-trace <train_id> <k> [文件名]"; OUT="${3:-arkena_$1_$2_trace.json}"; api GET "/v1/train/$1/matches/$2/trace" > "$OUT" && echo "已保存：$OUT"; }
+cmd_compare() { [ -n "$1" ] && [ -n "$2" ] || die "用法：arkena.sh compare <train_id_A> <train_id_B>"; api GET "/v1/train/compare?a=$1&b=$2"; echo; }
+
 cmd_status() { [ -n "$1" ] || die "用法：arkena.sh status <match_id>"; api GET "/v1/matches/$1"; echo; }
 cmd_recording() { [ -n "$1" ] || die "用法：arkena.sh recording <match_id> [文件名]"; OUT="${2:-arkena_$1.mp4}"; curl -sS -m 600 -A "$UA" -H "Authorization: Bearer $(token)" -o "$OUT" "$BASE/v1/matches/$1/recording" && echo "已下载：$OUT"; }
 cmd_trace() { [ -n "$1" ] || die "用法：arkena.sh trace <match_id> [文件名]"; OUT="${2:-arkena_$1_trace.json}"; api GET "/v1/matches/$1/trace" > "$OUT" && echo "已保存：$OUT"; }
@@ -107,5 +144,9 @@ case "${1:-}" in
   recording) shift; cmd_recording "$@";;
   trace) shift; cmd_trace "$@";;
   card) shift; cmd_card "$@";;
-  *) sed -n 2,9p "$0"; exit 1;;
+  train) shift; cmd_train "$@";;
+  train-status) shift; cmd_train_status "$@";;
+  train-trace) shift; cmd_train_trace "$@";;
+  compare) shift; cmd_compare "$@";;
+  *) sed -n 2,15p "$0"; exit 1;;
 esac
