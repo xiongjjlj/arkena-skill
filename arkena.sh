@@ -1,5 +1,5 @@
 #!/bin/sh
-# ARKENA CLI -- curl for API access; python3 for play; ffmpeg for verified recording downloads.
+# ARKENA CLI -- put your agent in the game. Only needs curl (python3 makes it better).
 #   arkena.sh signup <username> <password>     brand new user: get an invitation code, create the account, save the ACCOUNT KEY locally
 #   arkena.sh login <username> <password>      new machine / lost the key: sign in and issue a fresh ACCOUNT KEY (the old one stops working)
 #   arkena.sh key <ak_...>                     you already hold an account key: store it
@@ -50,30 +50,16 @@ token() {
 }
 # 只取账号密钥（没有就空），给 join 用：join 要能分辨「带账号注册」和「只有昵称」。
 account_key() { [ -n "${ARKENA_ACCOUNT_KEY:-}" ] && { printf '%s' "$ARKENA_ACCOUNT_KEY"; return; }; [ -f "$CFG" ] && jget "$(cat "$CFG")" key || true; }
-# 先向服务端认账号，再恢复该 user_id 的本机 Agent 档案。
-# 第二个参数只由成功的 join 提供；不能把上一个账号的昵称当作新账号的身份。
+# 把账号密钥写进 agent.json，保留已有的 name/user/platform。
 save_key() {
+  mkdir -p "$CFG_DIR"; OLD=""; [ -f "$CFG" ] && OLD=$(cat "$CFG")
   have python3 || die "saving the account key needs python3"
-  KEY_ME=$($CURL -m 30 -H "Authorization: Bearer $1" "$IDBASE/v1/me") || die "Cannot verify the account key; existing identity unchanged"
-  KEY_UID=$(jget "$KEY_ME" user_id)
-  [ -n "$KEY_UID" ] || die "Account key not verified; existing identity unchanged"
-  mkdir -p "$CFG_DIR"
-  python3 -c 'import json,sys,os,tempfile
-path,key,uid,joined=sys.argv[1:]
-old=json.load(open(path)) if os.path.exists(path) else {}
-profiles=old.get("profiles", {})
-if joined:
-    profile=json.loads(joined)
-    profiles[uid]={k:profile[k] for k in ("name","user","platform") if k in profile}
-# Legacy name/user fields have no verified owner; do not assign them to a new account.
-d={"key":key,"account_id":uid,"profiles":profiles}
-d.update(profiles.get(uid, {}))
-fd,tmp=tempfile.mkstemp(prefix=".agent-",dir=os.path.dirname(path))
-try:
-    with os.fdopen(fd,"w") as f: json.dump(d,f,ensure_ascii=False)
-    os.replace(tmp,path)
-finally:
-    if os.path.exists(tmp): os.unlink(tmp)' "$CFG" "$1" "$KEY_UID" "${2:-}"
+  printf '%s' "$OLD" | python3 -c 'import json,sys
+raw=sys.stdin.read().strip()
+d=json.loads(raw) if raw else {}
+d["key"]=sys.argv[1]
+sys.stdout.write(json.dumps(d,ensure_ascii=False))' "$1" > "$CFG"
+  chmod 600 "$CFG" 2>/dev/null || true
 }
 api() {  # api <method> <path> [json-body]
   if [ -n "$3" ]; then $CURL -m 60 -X "$1" -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" --data-binary "$3" "$BASE$2"
@@ -150,10 +136,8 @@ cmd_join() {
     R=$($CURL -m 60 -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents") || die "Cannot reach ${BASE} (the network reset the connection). Try another network or a proxy, or ask whoever gave you the link to move it to their own domain."
   fi
   ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Registration failed: $ERR"
-  # 有账号时只把本次成功 join 的显示资料记到已验证的 user_id 下；保留其它账号档案。
-  if [ -n "$AK" ]; then
-    save_key "$AK" "$BODY"
-  elif have python3; then
+  # 写配置时不能直接覆盖：账号密钥已经在这个文件里了，整份盖掉就是把它弄丢。
+  if have python3; then
     printf '%s' "$BODY" | python3 -c 'import json,sys,os
 d=json.load(sys.stdin)
 k=sys.argv[1]
@@ -172,48 +156,16 @@ sys.stdout.write(json.dumps(d,ensure_ascii=False))' "$AK" > "$CFG"
 }
 
 cmd_whoami() {
-  [ -f "$CFG" ] || [ -n "${ARKENA_ACCOUNT_KEY:-}" ] || die "No identity yet: arkena.sh signup <username> <password>  or  arkena.sh join <nickname> <your-name>"
+  [ -f "$CFG" ] || die "No identity yet: arkena.sh signup <username> <password>  or  arkena.sh join <nickname> <your-name>"
+  echo "agent: $(jget "$(cat "$CFG")" name)   user: $(jget "$(cat "$CFG")" user)   page: $BASE/a/$(jget "$(cat "$CFG")" name)"
   AK=$(account_key)
   if [ -n "$AK" ]; then
     # 问账号服务「这把钥匙是谁」——不自己解析密钥，认人只有一处能答。
-    ME=$($CURL -m 30 -H "Authorization: Bearer $AK" "$IDBASE/v1/me") || die "Cannot verify the current account"
-    WHO_UID=$(jget "$ME" user_id)
-    [ -n "$WHO_UID" ] || die "The account key is not recognised - run arkena.sh login <username> <password> to issue a new one"
-    have python3 || die "reading account identity needs python3"
-    PROFILE=$(python3 -c 'import json,sys,os
-d=json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
-print(json.dumps(d.get("profiles", {}).get(sys.argv[2], {}),ensure_ascii=False))' "$CFG" "$WHO_UID")
-    echo "account: $(jget "$ME" display_name)  ($WHO_UID)   key: ${AK%%${AK#ak_??????}}…"
-    if [ -n "$(jget "$PROFILE" name)" ]; then
-      echo "agent: $(jget "$PROFILE" name)   user: $(jget "$PROFILE" user)   page: $BASE/a/$(jget "$PROFILE" name)"
-    else
-      echo "agent: no known Agent for this account on this machine. Run arkena.sh join <nickname> <your-name> to register or recover it."
-    fi
-  else
-    echo "agent: $(jget "$(cat "$CFG")" name)   user: $(jget "$(cat "$CFG")" user)   page: $BASE/a/$(jget "$(cat "$CFG")" name)"
-    echo "account: none (nickname-only). Run  arkena.sh signup <username> <password>  to own this agent."
-  fi
+    ME=$($CURL -m 30 -H "Authorization: Bearer $AK" "$IDBASE/v1/me" || true)
+    if [ -n "$(jget "$ME" user_id)" ]; then echo "account: $(jget "$ME" display_name)  ($(jget "$ME" user_id))   key: ${AK%%${AK#ak_??????}}…"
+    else echo "account: the stored key is not recognised any more - run  arkena.sh login <username> <password>  to issue a new one"; fi
+  else echo "account: none (nickname-only). Run  arkena.sh signup <username> <password>  to own this agent."; fi
 }
-
-# All recording paths share the same success contract: HTTP success AND a
-# non-empty video stream decoded to EOF without errors. This does not prove that
-# the game recording contains the match ending; that is a separate content check.
-download_recording() (
-  download_url="$1"; download_out="$2"; shift 2
-  have ffmpeg || { echo "Video verification requires ffmpeg; install FFmpeg and retry. No verified recording saved." >&2; return 1; }
-  download_tmp="${download_out}.part.$$"
-  trap 'rm -f "$download_tmp"' 0
-  if ! $CURL -f -L -m 600 "$@" -o "$download_tmp" "$download_url"; then
-    echo "Recording transfer failed; no verified recording saved." >&2
-    return 1
-  fi
-  if ! ffmpeg -nostdin -v error -xerror -err_detect explode -threads 2 -i "$download_tmp" \
-       -map 0:v:0 -map '0:a?' -abort_on empty_output -f null -; then
-    echo "Recording validation failed: no video or incomplete/corrupt media; no verified recording saved." >&2
-    return 1
-  fi
-  mv -f "$download_tmp" "$download_out"
-)
 
 cmd_play() {
   FILE="$1"; shift || true
@@ -251,45 +203,48 @@ cmd_play() {
   echo "④ Result:"; jget "$R" result
   URL=$(jget "$R" recording_url)
   RES=$(jget "$R" result)
-  have ffmpeg || die "Video verification requires ffmpeg; install FFmpeg, then fetch this match with arkena.sh recording $MID. The match result is already available at $BASE/m/$MID"
-  OUT="arkena_$MID.mp4"; OK=""; W=0
-  # The main recording can lag behind the result. Keep the existing bounded
-  # wait, but never treat a large response body as a verified recording.
   if [ -n "$URL" ]; then
     EXT=$(printf '%s' "$(jget "$RES" recording_key)" | sed 's/.*\.//'); [ -n "$EXT" ] || EXT=mp4
     OUT="arkena_$MID.$EXT"
-    while :; do
-      if download_recording "$URL" "$OUT" -H "Authorization: Bearer $(token)"; then OK=1; break; fi
-      [ "$W" -ge 90 ] && break
-      sleep 10; W=$((W+10)); echo "   no verified recording yet; retrying… ${W}s"
+    # 对局刚结束时录像常常还在上传，这个地址会回一小段 JSON 说「还没有」。
+    # 以前不看下回来的是什么，照样打印 Recording downloaded——用户拿到一个 89 字节的「mp4」。
+    # 现在按大小认：太小就等一会儿重来，主份一直不来就换 CDN 那份。
+    W=0; OK=""
+    while : ; do
+      $CURL -m 600 -H "Authorization: Bearer $(token)" -o "$OUT" "$URL" || true
+      SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0)
+      if [ "$SZ" -gt 100000 ]; then OK=1; break; fi
+      [ $W -ge 90 ] && break
+      sleep 10; W=$((W+10)); echo "   waiting for the recording to finish uploading… ${W}s"
       R=$(api GET "/v1/matches/$MID"); RES=$(jget "$R" result)
     done
+    if [ -z "$OK" ]; then
+      CDN=$(jget "$RES" cdn_video_url)
+      if [ -n "$CDN" ]; then $CURL -m 600 -o "$OUT" "$CDN" || true; SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0); [ "$SZ" -gt 100000 ] && OK=1; fi
+    fi
+    if [ -n "$OK" ]; then echo "⑤ Recording downloaded: $OUT (${SZ} bytes; watch online: $BASE/m/$MID)"
+    else rm -f "$OUT"; echo "⑤ The recording is still uploading. Watch it here: $BASE/m/$MID   or fetch it later with  sh arkena.sh recording $MID"; fi
+    if [ -n "$OK" ] && have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   extracted 6 frames: arkena_${MID}_1..6.jpg"; fi
   else
+    # 平台自己那份还没落到位（recording_key 为空）时，CDN 上那份往往已经在了。
+    # 之前这里直接说「这一局没有录像」——录像其实下得到，只是问错了字段。
     CDN=$(jget "$RES" cdn_video_url)
-    while [ -z "$CDN" ] && [ "$W" -lt 90 ]; do
+    # 对局刚结束的那几十秒里两个地址可能都还是空的。等一会儿再问几次，
+    # 比直接告诉用户「没有录像」准确——实测那一份随后就出现了。
+    W=0
+    while [ -z "$CDN" ] && [ $W -lt 90 ]; do
       sleep 10; W=$((W+10))
       R=$(api GET "/v1/matches/$MID"); RES=$(jget "$R" result); CDN=$(jget "$RES" cdn_video_url)
-      [ -z "$CDN" ] && echo "   waiting for a recording URL… ${W}s"
+      [ -z "$CDN" ] && echo "   waiting for the recording to sync… ${W}s"
     done
-  fi
-  if [ -z "$OK" ]; then
-    CDN=$(jget "$RES" cdn_video_url)
-    if [ -n "$CDN" ] && download_recording "$CDN" "$OUT"; then OK=1; fi
-  fi
-  RECORDING_STATUS=1
-  if [ -n "$OK" ]; then
-    RECORDING_STATUS=0; SZ=$(wc -c < "$OUT")
-    echo "⑤ Recording downloaded: $OUT (${SZ} bytes; video decoded without errors; watch online: $BASE/m/$MID)"
-    if ffmpeg -nostdin -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg"; then
-      echo "   extracted preview frames: arkena_${MID}_*.jpg"
-    fi
-  else
-    echo "⑤ No verified recording: unavailable or invalid media. The match result is preserved at $BASE/m/$MID; retry with arkena.sh recording $MID" >&2
+    if [ -n "$CDN" ]; then
+      OUT="arkena_$MID.mp4"; $CURL -m 600 -o "$OUT" "$CDN" && echo "⑤ Recording downloaded (CDN copy): $OUT (watch online: $BASE/m/$MID)"
+      if have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   extracted 6 frames: arkena_${MID}_1..6.jpg"; fi
+    else echo "⑤ The recording is not ready yet. Watch it here: $BASE/m/$MID   or fetch it later with  sh arkena.sh recording $MID"; fi
   fi
   echo "⑥ Result card (HTML, render it for the user if you can): $BASE/v1/matches/$MID/card?chat=1    per-tick trace: arkena.sh trace $MID"
   echo
   echo "Now show the user the result card (recording + score/result), then let them pick one of three: ① play another match  ② coach it (they say what to change)  ③ let the AI iterate once. Do not submit or start another match before the user picks."
-  return "$RECORDING_STATUS"
 }
 
 cmd_card() {  # card join | card <agent-nickname> | card <match_id> → print the card HTML (for agents that can render HTML)
@@ -335,19 +290,20 @@ cmd_train_trace() { [ -n "$1" ] && [ -n "$2" ] || die "Usage: arkena.sh train-tr
 cmd_compare() { [ -n "$1" ] && [ -n "$2" ] || die "Usage: arkena.sh compare <train_id_A> <train_id_B>"; api GET "/v1/train/compare?a=$1&b=$2"; echo; }
 
 cmd_status() { [ -n "$1" ] || die "Usage: arkena.sh status <match_id>"; api GET "/v1/matches/$1"; echo; }
-cmd_recording() {  # Prefer the main recording, with the same validation for CDN fallback.
+cmd_recording() {  # 先问这一局录像在哪：平台自己那份优先，没有就下 CDN 那份。
   [ -n "$1" ] || die "Usage: arkena.sh recording <match_id> [filename]"
-  have ffmpeg || die "Video verification requires ffmpeg; install FFmpeg and retry. No verified recording saved."
   OUT="${2:-arkena_$1.mp4}"
-  R=$(api GET "/v1/matches/$1"); URL=$(jget "$R" recording_url); OK=""
-  if [ -n "$URL" ] && download_recording "$URL" "$OUT" -H "Authorization: Bearer $(token)"; then OK=1; fi
-  if [ -z "$OK" ]; then
+  R=$(api GET "/v1/matches/$1"); URL=$(jget "$R" recording_url)
+  if [ -n "$URL" ]; then $CURL -m 600 -H "Authorization: Bearer $(token)" -o "$OUT" "$URL"
+  else
     CDN=$(jget "$(jget "$R" result)" cdn_video_url)
-    if [ -n "$CDN" ] && download_recording "$CDN" "$OUT"; then OK=1; fi
+    [ -n "$CDN" ] || die "This match has no recording yet. Watch it here: $BASE/m/$1"
+    $CURL -m 600 -o "$OUT" "$CDN"
   fi
-  [ -n "$OK" ] || die "No verified recording: unavailable or invalid media. Watch this match here: $BASE/m/$1"
-  SZ=$(wc -c < "$OUT")
-  echo "Downloaded: $OUT (${SZ} bytes; video decoded without errors)"
+  # 之前这里不看下下来的是什么，于是把一段 89 字节的错误正文也报成 Downloaded。
+  SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0)
+  [ "$SZ" -gt 100000 ] || { rm -f "$OUT"; die "The download came back too small (${SZ} bytes) - the recording is probably still syncing. Watch it here: $BASE/m/$1"; }
+  echo "Downloaded: $OUT (${SZ} bytes)"
 }
 cmd_trace() { [ -n "$1" ] || die "Usage: arkena.sh trace <match_id> [filename]"; OUT="${2:-arkena_$1_trace.json}"; api GET "/v1/matches/$1/trace" > "$OUT" && echo "Saved: $OUT"; }
 
