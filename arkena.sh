@@ -1,5 +1,5 @@
 #!/bin/sh
-# ARKENA CLI -- put your agent in the game. Only needs curl (python3 makes it better).
+# ARKENA CLI -- curl for API access; python3 for play; ffmpeg for verified recording downloads.
 #   arkena.sh signup <username> <password>     brand new user: get an invitation code, create the account, save the ACCOUNT KEY locally
 #   arkena.sh login <username> <password>      new machine / lost the key: sign in and issue a fresh ACCOUNT KEY (the old one stops working)
 #   arkena.sh key <ak_...>                     you already hold an account key: store it
@@ -13,6 +13,7 @@
 #   arkena.sh card join|<agent-nickname>|<match_id>  print the HTML of the signup card / profile card / result card (for agents that can render HTML in chat)
 #   arkena.sh train <strategy.js> [--matches 30] [--hz 5] [--name strategy-name] [--mode round|match]
 #                                             the Gym: play N matches against DigitalBear in headless lockstep (about 2 seconds each), no live-rig queue, prints the win rate and 95% interval
+#   arkena.sh train-stop <train_id>           request owned training stop; follow train-status until stopped
 #   arkena.sh train-status <train_id>         check a training run (per-match results, win rate, interval)
 #   arkena.sh train-trace <train_id> <k> [filename]   download the per-tick trace of match k
 #   arkena.sh compare <train_id_A> <train_id_B>     win-rate gap and significance (z-test) between two training runs -- did the change really help
@@ -50,16 +51,30 @@ token() {
 }
 # 只取账号密钥（没有就空），给 join 用：join 要能分辨「带账号注册」和「只有昵称」。
 account_key() { [ -n "${ARKENA_ACCOUNT_KEY:-}" ] && { printf '%s' "$ARKENA_ACCOUNT_KEY"; return; }; [ -f "$CFG" ] && jget "$(cat "$CFG")" key || true; }
-# 把账号密钥写进 agent.json，保留已有的 name/user/platform。
+# 先向服务端认账号，再恢复该 user_id 的本机 Agent 档案。
+# 第二个参数只由成功的 join 提供；不能把上一个账号的昵称当作新账号的身份。
 save_key() {
-  mkdir -p "$CFG_DIR"; OLD=""; [ -f "$CFG" ] && OLD=$(cat "$CFG")
   have python3 || die "saving the account key needs python3"
-  printf '%s' "$OLD" | python3 -c 'import json,sys
-raw=sys.stdin.read().strip()
-d=json.loads(raw) if raw else {}
-d["key"]=sys.argv[1]
-sys.stdout.write(json.dumps(d,ensure_ascii=False))' "$1" > "$CFG"
-  chmod 600 "$CFG" 2>/dev/null || true
+  KEY_ME=$($CURL -m 30 -H "Authorization: Bearer $1" "$IDBASE/v1/me") || die "Cannot verify the account key; existing identity unchanged"
+  KEY_UID=$(jget "$KEY_ME" user_id)
+  [ -n "$KEY_UID" ] || die "Account key not verified; existing identity unchanged"
+  mkdir -p "$CFG_DIR"
+  python3 -c 'import json,sys,os,tempfile
+path,key,uid,joined=sys.argv[1:]
+old=json.load(open(path)) if os.path.exists(path) else {}
+profiles=old.get("profiles", {})
+if joined:
+    profile=json.loads(joined)
+    profiles[uid]={k:profile[k] for k in ("name","user","platform") if k in profile}
+# Legacy name/user fields have no verified owner; do not assign them to a new account.
+d={"key":key,"account_id":uid,"profiles":profiles}
+d.update(profiles.get(uid, {}))
+fd,tmp=tempfile.mkstemp(prefix=".agent-",dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd,"w") as f: json.dump(d,f,ensure_ascii=False)
+    os.replace(tmp,path)
+finally:
+    if os.path.exists(tmp): os.unlink(tmp)' "$CFG" "$1" "$KEY_UID" "${2:-}"
 }
 api() {  # api <method> <path> [json-body]
   if [ -n "$3" ]; then $CURL -m 60 -X "$1" -H "Authorization: Bearer $(token)" -H "Content-Type: application/json" --data-binary "$3" "$BASE$2"
@@ -136,8 +151,10 @@ cmd_join() {
     R=$($CURL -m 60 -X POST -H "Content-Type: application/json" --data-binary "$BODY" "$BASE/v1/agents") || die "Cannot reach ${BASE} (the network reset the connection). Try another network or a proxy, or ask whoever gave you the link to move it to their own domain."
   fi
   ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Registration failed: $ERR"
-  # 写配置时不能直接覆盖：账号密钥已经在这个文件里了，整份盖掉就是把它弄丢。
-  if have python3; then
+  # 有账号时只把本次成功 join 的显示资料记到已验证的 user_id 下；保留其它账号档案。
+  if [ -n "$AK" ]; then
+    save_key "$AK" "$BODY"
+  elif have python3; then
     printf '%s' "$BODY" | python3 -c 'import json,sys,os
 d=json.load(sys.stdin)
 k=sys.argv[1]
@@ -156,16 +173,48 @@ sys.stdout.write(json.dumps(d,ensure_ascii=False))' "$AK" > "$CFG"
 }
 
 cmd_whoami() {
-  [ -f "$CFG" ] || die "No identity yet: arkena.sh signup <username> <password>  or  arkena.sh join <nickname> <your-name>"
-  echo "agent: $(jget "$(cat "$CFG")" name)   user: $(jget "$(cat "$CFG")" user)   page: $BASE/a/$(jget "$(cat "$CFG")" name)"
+  [ -f "$CFG" ] || [ -n "${ARKENA_ACCOUNT_KEY:-}" ] || die "No identity yet: arkena.sh signup <username> <password>  or  arkena.sh join <nickname> <your-name>"
   AK=$(account_key)
   if [ -n "$AK" ]; then
     # 问账号服务「这把钥匙是谁」——不自己解析密钥，认人只有一处能答。
-    ME=$($CURL -m 30 -H "Authorization: Bearer $AK" "$IDBASE/v1/me" || true)
-    if [ -n "$(jget "$ME" user_id)" ]; then echo "account: $(jget "$ME" display_name)  ($(jget "$ME" user_id))   key: ${AK%%${AK#ak_??????}}…"
-    else echo "account: the stored key is not recognised any more - run  arkena.sh login <username> <password>  to issue a new one"; fi
-  else echo "account: none (nickname-only). Run  arkena.sh signup <username> <password>  to own this agent."; fi
+    ME=$($CURL -m 30 -H "Authorization: Bearer $AK" "$IDBASE/v1/me") || die "Cannot verify the current account"
+    WHO_UID=$(jget "$ME" user_id)
+    [ -n "$WHO_UID" ] || die "The account key is not recognised - run arkena.sh login <username> <password> to issue a new one"
+    have python3 || die "reading account identity needs python3"
+    PROFILE=$(python3 -c 'import json,sys,os
+d=json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
+print(json.dumps(d.get("profiles", {}).get(sys.argv[2], {}),ensure_ascii=False))' "$CFG" "$WHO_UID")
+    echo "account: $(jget "$ME" display_name)  ($WHO_UID)   key: ${AK%%${AK#ak_??????}}…"
+    if [ -n "$(jget "$PROFILE" name)" ]; then
+      echo "agent: $(jget "$PROFILE" name)   user: $(jget "$PROFILE" user)   page: $BASE/a/$(jget "$PROFILE" name)"
+    else
+      echo "agent: no known Agent for this account on this machine. Run arkena.sh join <nickname> <your-name> to register or recover it."
+    fi
+  else
+    echo "agent: $(jget "$(cat "$CFG")" name)   user: $(jget "$(cat "$CFG")" user)   page: $BASE/a/$(jget "$(cat "$CFG")" name)"
+    echo "account: none (nickname-only). Run  arkena.sh signup <username> <password>  to own this agent."
+  fi
 }
+
+# All recording paths share the same success contract: HTTP success AND a
+# non-empty video stream decoded to EOF without errors. This does not prove that
+# the game recording contains the match ending; that is a separate content check.
+download_recording() (
+  download_url="$1"; download_out="$2"; shift 2
+  have ffmpeg || { echo "Video verification requires ffmpeg; install FFmpeg and retry. No verified recording saved." >&2; return 1; }
+  download_tmp="${download_out}.part.$$"
+  trap 'rm -f "$download_tmp"' 0
+  if ! $CURL -f -L -m 600 "$@" -o "$download_tmp" "$download_url"; then
+    echo "Recording transfer failed; no verified recording saved." >&2
+    return 1
+  fi
+  if ! ffmpeg -nostdin -v error -xerror -err_detect explode -threads 2 -i "$download_tmp" \
+       -map 0:v:0 -map '0:a?' -abort_on empty_output -f null -; then
+    echo "Recording validation failed: no video or incomplete/corrupt media; no verified recording saved." >&2
+    return 1
+  fi
+  mv -f "$download_tmp" "$download_out"
+)
 
 cmd_play() {
   FILE="$1"; shift || true
@@ -178,11 +227,12 @@ cmd_play() {
   R=$(api POST /v1/strategies "$BODY"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Submit failed: $ERR  $(jget "$R" checks)"
   SID=$(jget "$R" strategy_id); echo "   passed: strategy_id=$SID"
   echo "② Starting a match (opponent DigitalBear, ${HZ}Hz, mode $MODE$([ "$MODE" = match ] && echo ': the full match, first to 14 net kills, about 5-10 minutes'))…"
-  R=$(api POST /v1/matches "{\"strategy_id\":\"$SID\",\"control_hz\":$HZ,\"mode\":\"$MODE\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Could not start the match: $ERR"
+  PLAY_REQUEST_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  R=$(api POST /v1/matches "{\"strategy_id\":\"$SID\",\"control_hz\":$HZ,\"mode\":\"$MODE\",\"request_id\":\"$PLAY_REQUEST_ID\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Could not start the match: $ERR"
   MID=$(jget "$R" match_id); echo "   match_id=$MID   match page: $BASE/m/$MID"
   W=$(wait_words "$(jget "$R" queue_pos)" "$(jget "$R" eta_s)"); [ -z "$W" ] || echo "   $W"
   echo "③ Waiting for the result (one round per match, ends as soon as someone dies)…"
-  LAST=""; T0=$(date +%s)
+  LAST=""; LAST_MEDIA=""; T0=$(date +%s)
   while :; do
     R=$(api GET "/v1/matches/$MID"); ST=$(jget "$R" state); QP=$(jget "$R" queue_pos); W=$(wait_words "$QP" "$(jget "$R" eta_s)")
     # 查不到状态就停下来说清楚。以前这里只认 done/failed/error，答复里没有 state 时
@@ -196,55 +246,39 @@ cmd_play() {
    If this says the key is not valid, someone issued a new key for this account (that invalidates the old one). Run  sh arkena.sh login <username> <password>  and try again."
     fi
     KEY="$ST/$QP"; if [ "$KEY" != "$LAST" ]; then echo "   $(( $(date +%s) - T0 ))s  state=$ST  queue_pos=$QP${W:+  ($W)}"; LAST="$KEY"; fi
-    case "$ST" in done|failed|error) break;; esac
+    MEDIA=$(jget "$R" media); MEDIA_ST=$(jget "$MEDIA" state)
+    if [ "$ST" = done ] && [ "$MEDIA_ST" = preparing ]; then
+      [ "$LAST_MEDIA" = preparing ] || echo "比赛已结束，录像还在准备中"
+      LAST_MEDIA=preparing
+    else
+      [ "$MEDIA_ST" != failed ] || die "录像获取失败，已停止等待，请您决定下一步：$(jget "$MEDIA" reason)"
+      case "$ST" in done|failed|error|stopped) break;; esac
+    fi
     [ $(( $(date +%s) - T0 )) -lt 3600 ] || die "Still not finished after an hour; check again later with arkena.sh status $MID"
     sleep 5
   done
+  [ "$ST" != stopped ] || { echo "已停止，不会自动开下一局。"; return 0; }
+  [ "$ST" = done ] || die "Match ended with an error; wait for the user to decide."
+  MEDIA=$(jget "$R" media)
+  [ "$(jget "$MEDIA" state)" = ready ] || die "No verified recording; result preserved. Wait for the user to decide."
   echo "④ Result:"; jget "$R" result
   URL=$(jget "$R" recording_url)
-  RES=$(jget "$R" result)
-  if [ -n "$URL" ]; then
-    EXT=$(printf '%s' "$(jget "$RES" recording_key)" | sed 's/.*\.//'); [ -n "$EXT" ] || EXT=mp4
-    OUT="arkena_$MID.$EXT"
-    # 对局刚结束时录像常常还在上传，这个地址会回一小段 JSON 说「还没有」。
-    # 以前不看下回来的是什么，照样打印 Recording downloaded——用户拿到一个 89 字节的「mp4」。
-    # 现在按大小认：太小就等一会儿重来，主份一直不来就换 CDN 那份。
-    W=0; OK=""
-    while : ; do
-      $CURL -m 600 -H "Authorization: Bearer $(token)" -o "$OUT" "$URL" || true
-      SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0)
-      if [ "$SZ" -gt 100000 ]; then OK=1; break; fi
-      [ $W -ge 90 ] && break
-      sleep 10; W=$((W+10)); echo "   waiting for the recording to finish uploading… ${W}s"
-      R=$(api GET "/v1/matches/$MID"); RES=$(jget "$R" result)
-    done
-    if [ -z "$OK" ]; then
-      CDN=$(jget "$RES" cdn_video_url)
-      if [ -n "$CDN" ]; then $CURL -m 600 -o "$OUT" "$CDN" || true; SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0); [ "$SZ" -gt 100000 ] && OK=1; fi
-    fi
-    if [ -n "$OK" ]; then echo "⑤ Recording downloaded: $OUT (${SZ} bytes; watch online: $BASE/m/$MID)"
-    else rm -f "$OUT"; echo "⑤ The recording is still uploading. Watch it here: $BASE/m/$MID   or fetch it later with  sh arkena.sh recording $MID"; fi
-    if [ -n "$OK" ] && have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   extracted 6 frames: arkena_${MID}_1..6.jpg"; fi
-  else
-    # 平台自己那份还没落到位（recording_key 为空）时，CDN 上那份往往已经在了。
-    # 之前这里直接说「这一局没有录像」——录像其实下得到，只是问错了字段。
-    CDN=$(jget "$RES" cdn_video_url)
-    # 对局刚结束的那几十秒里两个地址可能都还是空的。等一会儿再问几次，
-    # 比直接告诉用户「没有录像」准确——实测那一份随后就出现了。
-    W=0
-    while [ -z "$CDN" ] && [ $W -lt 90 ]; do
-      sleep 10; W=$((W+10))
-      R=$(api GET "/v1/matches/$MID"); RES=$(jget "$R" result); CDN=$(jget "$RES" cdn_video_url)
-      [ -z "$CDN" ] && echo "   waiting for the recording to sync… ${W}s"
-    done
-    if [ -n "$CDN" ]; then
-      OUT="arkena_$MID.mp4"; $CURL -m 600 -o "$OUT" "$CDN" && echo "⑤ Recording downloaded (CDN copy): $OUT (watch online: $BASE/m/$MID)"
-      if have ffmpeg; then ffmpeg -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_${MID}_%d.jpg" && echo "   extracted 6 frames: arkena_${MID}_1..6.jpg"; fi
-    else echo "⑤ The recording is not ready yet. Watch it here: $BASE/m/$MID   or fetch it later with  sh arkena.sh recording $MID"; fi
+  have ffmpeg || die "Recording verification unavailable: FFmpeg is required. Original match $MID is preserved; wait for the user to decide."
+  [ -n "$URL" ] || die "No verified recording URL for $MID; wait for the user to decide."
+  OUT="arkena_$MID.mp4"
+  if ! download_recording "$URL" "$OUT" -H "Authorization: Bearer $(token)"; then
+    echo "录像获取失败，已停止等待，请您决定下一步。Original match: $BASE/m/$MID" >&2
+    return 1
+  fi
+  SZ=$(wc -c < "$OUT")
+  echo "⑤ Recording downloaded: $OUT ($SZ bytes; video decoded without errors; watch online: $BASE/m/$MID)"
+  if ffmpeg -nostdin -loglevel error -y -i "$OUT" -vf "fps=1/5,scale=640:-1" -frames:v 6 "arkena_$MID""_%d.jpg"; then
+    echo "   extracted preview frames: arkena_$MID""_*.jpg"
   fi
   echo "⑥ Result card (HTML, render it for the user if you can): $BASE/v1/matches/$MID/card?chat=1    per-tick trace: arkena.sh trace $MID"
   echo
   echo "Now show the user the result card (recording + score/result), then let them pick one of three: ① play another match  ② coach it (they say what to change)  ③ let the AI iterate once. Do not submit or start another match before the user picks."
+  return 0
 }
 
 cmd_card() {  # card join | card <agent-nickname> | card <match_id> → print the card HTML (for agents that can render HTML)
@@ -267,7 +301,9 @@ cmd_train() {  # the Gym: submit → training queue → play N matches in headle
   R=$(api POST /v1/strategies "$BODY"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Submit failed: $ERR  $(jget "$R" checks)"
   SID=$(jget "$R" strategy_id); echo "   passed: strategy_id=$SID"
   echo "② Entering the Gym: $N matches against DigitalBear ($MODE), ${HZ}Hz, headless lockstep…"
-  R=$(api POST /v1/train "{\"strategy_id\":\"$SID\",\"matches\":$N,\"control_hz\":$HZ,\"mode\":\"$MODE\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Could not start training: $ERR"
+  TRAIN_REQUEST_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  echo "   action=$TRAIN_REQUEST_ID strategy=$SID; if the reply is lost, retry /v1/train with these same IDs; do not upload/start a new action."
+  R=$(api POST /v1/train "{\"strategy_id\":\"$SID\",\"matches\":$N,\"control_hz\":$HZ,\"mode\":\"$MODE\",\"request_id\":\"$TRAIN_REQUEST_ID\"}"); ERR=$(jget "$R" error); [ -z "$ERR" ] || die "Could not start training: $ERR"
   TID=$(jget "$R" train_id); W=$(wait_words "$(jget "$R" queue_pos)" "$(jget "$R" eta_s)")
   echo "   train_id=$TID   ${W:-$(jget "$R" queue_pos) job(s) ahead of you}"
   echo "③ Waiting for results (about 2 seconds per match; progress printed every 10 seconds)…"
@@ -275,35 +311,51 @@ cmd_train() {  # the Gym: submit → training queue → play N matches in headle
   while :; do
     R=$(api GET "/v1/train/$TID"); ST=$(jget "$R" state); DN=$(jget "$R" done); QP=$(jget "$R" queue_pos)
     KEY="$ST/$DN/$QP"; if [ "$KEY" != "$LAST" ]; then echo "   $(( $(date +%s) - T0 ))s  state=$ST  done=$DN/$N  queue_pos=$QP  W/L/D=$(jget "$R" wins)/$(jget "$R" losses)/$(jget "$R" draws)"; LAST="$KEY"; fi
-    case "$ST" in done|failed|error) break;; esac
+    MEDIA=$(jget "$R" media); MEDIA_ST=$(jget "$MEDIA" state)
+    if [ "$ST" = done ] && [ "$MEDIA_ST" = preparing ]; then
+      [ "$LAST_MEDIA" = preparing ] || echo "比赛已结束，录像还在准备中"
+      LAST_MEDIA=preparing
+    else
+      [ "$MEDIA_ST" != failed ] || die "录像获取失败，已停止等待，请您决定下一步：$(jget "$MEDIA" reason)"
+      case "$ST" in done|failed|error|stopped) break;; esac
+    fi
     [ $(( $(date +%s) - T0 )) -lt 3600 ] || die "Still not finished after an hour; check again later with arkena.sh train-status $TID"
     sleep 10
   done
+  if [ "$ST" = stopped ]; then
+    echo "训练已停止；已回传 $DN/$N 局，以下是部分结果，不是完整训练：$R"
+    return
+  fi
   echo "④ Summary: vs DigitalBear ($(jget "$R" house_version)) win rate $(jget "$R" win_rate)  95% interval $(jget "$R" ci95)  W/L/D $(jget "$R" wins)/$(jget "$R" losses)/$(jget "$R" draws)   $(jget "$R" summary)"
   echo "   per match: $(jget "$R" results | cut -c1-600)…"
   echo "   trace of match k: arkena.sh train-trace $TID <k>    compare with the previous version: arkena.sh compare <the previous train_id> $TID"
   echo
   echo "How to tell whether it really improved: same DigitalBear version, same number of matches, then read the z-test from compare; at 30 matches the interval is about ±17 percentage points, so a change worth less than 10 points needs 100+ matches to be visible."
 }
+cmd_train_stop() {
+  [ -n "$1" ] || die "Usage: arkena.sh train-stop <train_id>"
+  echo "正在请求停止训练；收到 stopped 前不能确认执行已停。"
+  api POST "/v1/train/$1/stop" '{}'; echo
+  echo "仅查询原任务：arkena.sh train-status $1；stopping 时继续查询，stopped 后汇报部分结果并等待，不追加任务。"
+}
 cmd_train_status() { [ -n "$1" ] || die "Usage: arkena.sh train-status <train_id>"; api GET "/v1/train/$1"; echo; }
 cmd_train_trace() { [ -n "$1" ] && [ -n "$2" ] || die "Usage: arkena.sh train-trace <train_id> <k> [filename]"; OUT="${3:-arkena_$1_$2_trace.json}"; api GET "/v1/train/$1/matches/$2/trace" > "$OUT" && echo "Saved: $OUT"; }
 cmd_compare() { [ -n "$1" ] && [ -n "$2" ] || die "Usage: arkena.sh compare <train_id_A> <train_id_B>"; api GET "/v1/train/compare?a=$1&b=$2"; echo; }
 
 cmd_status() { [ -n "$1" ] || die "Usage: arkena.sh status <match_id>"; api GET "/v1/matches/$1"; echo; }
-cmd_recording() {  # 先问这一局录像在哪：平台自己那份优先，没有就下 CDN 那份。
+cmd_recording() {  # Prefer the main recording, with the same validation for CDN fallback.
   [ -n "$1" ] || die "Usage: arkena.sh recording <match_id> [filename]"
+  have ffmpeg || die "Video verification requires ffmpeg; install FFmpeg and retry. No verified recording saved."
   OUT="${2:-arkena_$1.mp4}"
-  R=$(api GET "/v1/matches/$1"); URL=$(jget "$R" recording_url)
-  if [ -n "$URL" ]; then $CURL -m 600 -H "Authorization: Bearer $(token)" -o "$OUT" "$URL"
-  else
+  R=$(api GET "/v1/matches/$1"); URL=$(jget "$R" recording_url); OK=""
+  if [ -n "$URL" ] && download_recording "$URL" "$OUT" -H "Authorization: Bearer $(token)"; then OK=1; fi
+  if [ -z "$OK" ]; then
     CDN=$(jget "$(jget "$R" result)" cdn_video_url)
-    [ -n "$CDN" ] || die "This match has no recording yet. Watch it here: $BASE/m/$1"
-    $CURL -m 600 -o "$OUT" "$CDN"
+    if [ -n "$CDN" ] && download_recording "$CDN" "$OUT"; then OK=1; fi
   fi
-  # 之前这里不看下下来的是什么，于是把一段 89 字节的错误正文也报成 Downloaded。
-  SZ=$(wc -c < "$OUT" 2>/dev/null || echo 0)
-  [ "$SZ" -gt 100000 ] || { rm -f "$OUT"; die "The download came back too small (${SZ} bytes) - the recording is probably still syncing. Watch it here: $BASE/m/$1"; }
-  echo "Downloaded: $OUT (${SZ} bytes)"
+  [ -n "$OK" ] || die "No verified recording: unavailable or invalid media. Watch this match here: $BASE/m/$1"
+  SZ=$(wc -c < "$OUT")
+  echo "Downloaded: $OUT (${SZ} bytes; video decoded without errors)"
 }
 cmd_trace() { [ -n "$1" ] || die "Usage: arkena.sh trace <match_id> [filename]"; OUT="${2:-arkena_$1_trace.json}"; api GET "/v1/matches/$1/trace" > "$OUT" && echo "Saved: $OUT"; }
 
@@ -319,6 +371,7 @@ case "${1:-}" in
   trace) shift; cmd_trace "$@";;
   card) shift; cmd_card "$@";;
   train) shift; cmd_train "$@";;
+  train-stop) shift; cmd_train_stop "$@";;
   train-status) shift; cmd_train_status "$@";;
   train-trace) shift; cmd_train_trace "$@";;
   compare) shift; cmd_compare "$@";;
